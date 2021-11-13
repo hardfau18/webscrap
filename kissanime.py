@@ -14,13 +14,14 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
 def get_gogo(vid_link):
-
+    logging.debug(f"getting gogo link {vid_link}")
     stream = requests.get(vid_link, headers=headers)
     stream_sp = bs(stream.text, features="lxml")
     try:
         gog_lnk=stream_sp.iframe.get("src").replace("streaming.php", "download")
     except AttributeError:
-        return None
+        return None,None
+    logging.debug(f"got gogoplay link{gog_lnk}")
     gog = requests.get(gog_lnk, headers=headers)
     referer=gog.url
     gog_sp = bs(gog.text, features="lxml")
@@ -30,13 +31,14 @@ def get_gogo(vid_link):
     try:
         lnk_dct = {quality_pat.search(lnk.text).group():lnk.get("href") for lnk in q_links}
     except AttributeError:
-        return None
+        return None,None
     return (referer, lnk_dct)
 
 def download_gogo(link, referer=None):
+    logging.debug(f"downloading link {link} with referer {referer}")
     # this redirects to another which should not be followed but to go to location lnk manually
     r_resp = requests.get(link, allow_redirects=False, headers=headers)
-    headers["referer"] = "https://gogoplay1.com/"
+    headers["referer"] = referer
     r_lnk = r_resp.headers.get("Location")
     flname = r_lnk.split("?")[0].split("/")[-1]
     with requests.get(r_lnk, headers=headers, stream=True) as r:
@@ -61,10 +63,6 @@ def set_verbosity(level, quite=False):
         log_level = logging.WARN
     logging.basicConfig(level=log_level)
 
-def download(link):
-    logging.debug(f"[video] {link}")
-    referer, gogo_lnk = get_gogo(link)
-    download_gogo( gogo_lnk.get("360P"), referer=referer)
 
 def parse_playlist(link):
     url = urlparse(link)
@@ -105,8 +103,24 @@ def args_init():
     indx_cnt.add_argument( "--end-index", dest="end_index", default=None, type=int,  help="starting index of the video in a playlist. (starts with 0 and start index file will be downloaded)")
     indx_cnt.add_argument("-c",  "--count", dest="count", default=None, type=int,  help="number of videos in playlist to download")
 
+    formats = parser.add_mutually_exclusive_group()
+    formats.add_argument("-f", "--format", dest="format", action="store", metavar="quality", help="video quality to download. If not best quality is chosen. Use -F to see all available formats")
+    formats.add_argument("-F", "--list-formats", dest="list_format", action="store_true", help="list all available qualities")
+
     return parser.parse_args()
 
+
+def find_best(links):
+    bq = 0
+    bquality=None
+    for quality in links.keys():
+        res = re.search("\d+", quality)
+        rating = int(res.group(0))
+        if rating > bq:
+            bquality = quality
+            bq = rating
+    return bquality
+        
 
 if __name__ == "__main__":
     args = args_init()
@@ -134,6 +148,34 @@ if __name__ == "__main__":
     else:
         end = args.count
     logging.debug(f"list range {args.start_index}:{end}")
-    for lnk in dl_links[args.start_index:end]:
-        download(lnk)
+    for vid_link in dl_links[args.start_index:end]:
+        logging.debug(f"[video] {vid_link}")
+        referer, gogo_lnk = get_gogo(vid_link)
+        if gogo_lnk is None:
+            logging.warn("Couldn't get the gogoplay link for {vid_link}")
+            continue
 
+        bst_format = find_best(gogo_lnk)
+        if bst_format == None:
+            logging.warning("Couldn't get the best quality")
+        else:
+            logging.debug(f"best format found {bst_format}")
+
+        if args.list_format:
+            for format in gogo_lnk.keys():
+                if format == bst_format:
+                    print(f"{format}\t[best]")
+                else:
+                    print(format)
+        elif args.format:
+            lnk = gogo_lnk.get(args.format)
+            if lnk is None:
+                logging.warning(f"couldn't find format {args.format}, skipping")
+            else:
+                download_gogo(lnk, referer=referer)
+        else:
+            lnk = gogo_lnk.get(bst_format)
+            if lnk is None:
+                logging.warn(f"couldn't get the proper link ")
+            else:
+                download_gogo(lnk, referer=referer)
